@@ -2,13 +2,16 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -45,6 +48,68 @@ type Message struct {
 	UpstreamTime, RequestTime 		float64
 }
 
+// System status monitor
+type SystemInfo struct {
+	HandleLine 					int 		`json:"handleLine"`
+	Tps							float64 	`json:"tps"`
+	ReadChanLen					int 		`json:"readChanLen"`
+	WriteChanLen 				int 		`json:"writeChanLen"`
+	RunTime   					string		`json:"runTime"`
+	ErrNum						int			`json:"errNum"`
+}
+
+const (
+	TypeHandleLine = 0
+	TypeErrNum = 1
+)
+
+var TypeMonitorChan = make(chan int, 200)
+
+
+type Monitor struct {
+	startTime time.Time
+	data SystemInfo
+	tpsSli []int
+}
+
+func(m *Monitor) start(lp *LogProcess) {
+
+	go func() {
+		for n := range TypeMonitorChan {
+			switch n {
+			case TypeErrNum:
+				m.data.ErrNum += 1
+			case TypeHandleLine:
+				m.data.HandleLine += 1
+			}
+		}
+	}()
+
+	ticker := time.NewTicker(5 * time.Second)
+	go func() {
+		for {
+			<- ticker.C
+			m.tpsSli = append(m.tpsSli, m.data.HandleLine)
+			if len(m.tpsSli) >2 {
+				m.tpsSli = m.tpsSli[1:]
+			}
+		}
+	}()
+	http.HandleFunc("/monitor",
+		func(writer http.ResponseWriter, request *http.Request) {
+		m.data.RunTime = time.Now().Sub(m.startTime).String()
+		m.data.ReadChanLen = len(lp.rc)
+		m.data.WriteChanLen = len(lp.wc)
+		if len(m.tpsSli)>=2 {
+			m.data.Tps = float64(m.tpsSli[1]-m.tpsSli[0])/5
+		}
+
+		ret, _ := json.MarshalIndent(m.data, "", "\t")
+		io.WriteString(writer, string(ret))
+	})
+	http.ListenAndServe(":9193", nil)
+}
+
 func (r *ReadFromFile) Read(rc chan []byte) {
 	// open file
 	f, err := os.Open(r.path)
@@ -64,6 +129,7 @@ func (r *ReadFromFile) Read(rc chan []byte) {
 		} else if err != nil {
 			panic(fmt.Sprintf("read bytes error: %s", err))
 		}
+		TypeMonitorChan <- TypeHandleLine
 		// remove line breaker
 		rc <- line[:len(line)-1]
 	}
@@ -73,27 +139,30 @@ func (l *LogProcess) Process()  {
 	// Process
 	// 100.97.120.0 - - [08/Jan/2016:10:40:18 +0800] http "GET / HTTP/1.0" 200 612 "-" "KeepAliveClient" "-" 1.005 1.854
 
-	r := regexp.MustCompile(`([\d\.]+)\s+([^ \[]+)\s+([^ \[]+)\s+\[([^\]]+)\]\s+([a-z]+)\s+\"([^"]+)\"\s(\d{3})\s+
-								(\d+)\s+\"([^"]+)\"\s+\"(.*?)\"([\d\.-]+)\"\s+([\d\.-]+)\s+([\d\.-]+)`)
+	r := regexp.MustCompile(`([\d\.]+)\s+([^ \[]+)\s+([^ \[]+)\s+\[([^\]]+)\]\s+([a-z]+)\s+\"([^"]+)\"\s+(\d{3})\s+(\d+)\s+\"([^"]+)\"\s+\"(.*?)\"\s+\"([\d\.-]+)\"\s+([\d\.-]+)\s+([\d\.-]+)`)
 
 	for data := range l.rc {
 		sub := r.FindStringSubmatch(string(data))
 		if len(sub) != 14 {
+			TypeMonitorChan <- TypeErrNum
 			log.Println("find submatch string fail:", string(data))
 			continue
 		}
 
 		message := &Message{}
-		loc, _ := time.LoadLocation("Asia/Shanghai")
+		loc, _ := time.LoadLocation("America/Los_Angeles")
 		t, err := time.ParseInLocation("02/Jan/2006:15:04:05 +0000", sub[4], loc )
 		if err != nil {
+			TypeMonitorChan <- TypeErrNum
 			log.Println("parse in location fail:", err.Error(), sub[4])
+			continue
 		}
 
 		bytesSent, _ := strconv.Atoi(sub[8])
 
 		reqSli := strings.Split(sub[6], " ")
 		if len(reqSli) != 3 {
+			TypeMonitorChan <- TypeErrNum
 			log.Println("strings split fail", sub[6])
 			continue
 		}
@@ -181,7 +250,7 @@ func main()  {
 
 	flag.StringVar(&influxDBsn,
 		"influxDBsn",
-		"http://127.0.0.1:8086@yng@yngpass@yng@s",
+		"http://127.0.0.1:8086@admin@yngpass@yng@s",
 		"influx data source" )
 	flag.Parse()
 
@@ -204,6 +273,11 @@ func main()  {
 	go lp.Process()
 	go lp.write.Write(lp.wc)
 
-	time.Sleep(30 * time.Second)
+	m := &Monitor{
+		startTime: time.Now(),
+		data: SystemInfo{},
+	}
+	m.start(lp)
+
 }
 
