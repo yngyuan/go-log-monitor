@@ -1,7 +1,7 @@
 # go-log-monitor
 a log monitor tool written in go, connected to influxDB and grafana.
 
-** nginx log data --> log process(realtime reading, parsing, and wrting) -> save to influxDB --> show in grafana **
+**nginx log data --> log process(realtime reading, parsing, and wrting) -> save to influxDB --> show in grafana**
 
 ![pipeline](https://github.com/yngyuan/go-log-monitor/blob/master/grafana.png?raw=true)
 
