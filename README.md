@@ -2,13 +2,14 @@
 a log monitor tool written in go, connected to influxDB and grafana.
 
 ### usage
-
+```
 run influxDB from docker on port 8086
 run grafana from docker on port 3000
 config grafana data source as inflluxDB
 go run mock_data.go to generate mock log data
 go run log_process.go
 
+```
 ### project outline
 
 **nginx log data --> log process(realtime reading, parsing, and wrting) -> save to influxDB --> show in grafana**
